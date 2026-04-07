@@ -8,103 +8,220 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
+#include <libavutil/audio_fifo.h>
+#include <libavutil/channel_layout.h>
 }
 
 class EncoderEngine {
 private:
     AVFormatContext* formatCtx = nullptr;
-    AVCodecContext* codecCtx = nullptr;
-    AVStream* videoStream = nullptr;
-    const AVCodec* codec = nullptr;
 
-    std::string selectedEncoderName;
+    AVCodecContext* videoCodecCtx = nullptr;
+    AVStream* videoStream = nullptr;
+    SwsContext* swsCtx = nullptr;
+    AVFrame* videoFrame = nullptr;
+
+    AVCodecContext* audioCodecCtx = nullptr;
+    AVStream* audioStream = nullptr;
+    SwrContext* swrCtx = nullptr;
+    AVAudioFifo* audioFifo = nullptr;
+    AVFrame* audioFrame = nullptr;
+    int64_t audioFrameCounter = 0;
+
+    AVPacket* packet = nullptr;
+
+    void DrainAudioFifo() {
+        while (av_audio_fifo_size(audioFifo) >= audioCodecCtx->frame_size) {
+            av_audio_fifo_read(audioFifo, (void**)audioFrame->data, audioCodecCtx->frame_size);
+
+            audioFrame->pts = audioFrameCounter;
+            audioFrameCounter += audioFrame->nb_samples;
+
+            avcodec_send_frame(audioCodecCtx, audioFrame);
+            while (avcodec_receive_packet(audioCodecCtx, packet) == 0) {
+                av_packet_rescale_ts(packet, audioCodecCtx->time_base, audioStream->time_base);
+                packet->stream_index = audioStream->index;
+                av_interleaved_write_frame(formatCtx, packet);
+                av_packet_unref(packet);
+            }
+        }
+    }
 
 public:
     EncoderEngine() = default;
     ~EncoderEngine() { Cleanup(); }
 
-    bool Initialize(int width, int height, int fps, const char* outputFilename) {
-        std::cout << "\n--- Initializing Universal FFmpeg Encoder ---" << std::endl;
-
-        // 1. The Fallback Array: Try NVENC -> AMF -> QSV -> CPU
-        std::vector<std::string> encoderNames = { "h264_nvenc", "h264_amf", "h264_qsv", "libx264" };
-
-        for (const auto& name : encoderNames) {
-            codec = avcodec_find_encoder_by_name(name.c_str());
-            if (codec) {
-                selectedEncoderName = name;
-                std::cout << "[+] Successfully acquired hardware encoder: " << name << std::endl;
-                break;
-            }
-        }
-
-        if (!codec) {
-            std::cerr << "[-] FATAL: Could not find ANY h264 encoder. Is FFmpeg installed?" << std::endl;
-            return false;
-        }
-
-        // 2. Allocate the MP4 File Container
+    bool Initialize(int width, int height, int fps, int sampleRate, int inChannels, int inBitsPerSample, const char* outputFilename) {
         avformat_alloc_output_context2(&formatCtx, nullptr, "mp4", outputFilename);
         if (!formatCtx) return false;
 
-        // 3. Create the Video Stream inside the MP4
-        videoStream = avformat_new_stream(formatCtx, codec);
-        if (!videoStream) return false;
+        // --- 1. VIDEO SETUP (Millisecond Timebase) ---
+        std::vector<std::string> encoderNames = { "h264_nvenc", "h264_amf", "h264_qsv", "libx264" };
+        const AVCodec* vCodec = nullptr;
+        for (const auto& name : encoderNames) {
+            vCodec = avcodec_find_encoder_by_name(name.c_str());
+            if (!vCodec) continue;
 
-        // 4. Configure the Encoder Settings
-        codecCtx = avcodec_alloc_context3(codec);
-        codecCtx->width = width;
-        codecCtx->height = height;
-        codecCtx->time_base = { 1, fps };
-        videoStream->time_base = codecCtx->time_base;
-        codecCtx->framerate = { fps, 1 };
+            videoCodecCtx = avcodec_alloc_context3(vCodec);
+            videoCodecCtx->width = width;
+            videoCodecCtx->height = height;
+            videoCodecCtx->time_base = { 1, 1000 };
+            videoCodecCtx->framerate = { fps, 1 };
+            videoCodecCtx->pix_fmt = AV_PIX_FMT_NV12;
 
-        // NV12 is the standard pixel format required by almost all hardware encoders
-        codecCtx->pix_fmt = AV_PIX_FMT_NV12;
-
-        // Set Bitrate: 5,000,000 bits = 5 Mbps (Good quality for 1080p60)
-        codecCtx->bit_rate = 5000000;
-
-        // 5. Open the Hardware Encoder
-        if (avcodec_open2(codecCtx, codec, nullptr) < 0) {
-            std::cerr << "[-] Error: Could not boot the encoder: " << selectedEncoderName << std::endl;
-            return false;
-        }
-
-        // 6. Copy settings to the MP4 stream
-        avcodec_parameters_from_context(videoStream->codecpar, codecCtx);
-
-        // 7. Create the physical file on the disk
-        if (!(formatCtx->oformat->flags & AVFMT_NOFILE)) {
-            if (avio_open(&formatCtx->pb, outputFilename, AVIO_FLAG_WRITE) < 0) {
-                std::cerr << "[-] Error: Could not write to disk. Check permissions." << std::endl;
-                return false;
+            if (name == "libx264") {
+                av_opt_set(videoCodecCtx->priv_data, "preset", "veryfast", 0);
+                av_opt_set(videoCodecCtx->priv_data, "crf", "23", 0);
             }
-        }
 
-        // 8. Write the MP4 Header (Starts the file)
-        if (avformat_write_header(formatCtx, nullptr) < 0) {
-            std::cerr << "[-] Error: Could not write MP4 header." << std::endl;
-            return false;
+            if (avcodec_open2(videoCodecCtx, vCodec, nullptr) >= 0) break;
+            avcodec_free_context(&videoCodecCtx);
         }
+        if (!videoCodecCtx) return false;
 
-        std::cout << "[+] Encoder configured! Empty file created at: " << outputFilename << std::endl;
+        videoStream = avformat_new_stream(formatCtx, vCodec);
+        avcodec_parameters_from_context(videoStream->codecpar, videoCodecCtx);
+
+        // --- 2. AUDIO SETUP ---
+        const AVCodec* aCodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+        audioCodecCtx = avcodec_alloc_context3(aCodec);
+        audioCodecCtx->sample_rate = sampleRate;
+        av_channel_layout_default(&audioCodecCtx->ch_layout, 2); // Force stereo to prevent corruption
+        audioCodecCtx->sample_fmt = AV_SAMPLE_FMT_FLTP;
+        audioCodecCtx->bit_rate = 192000;
+        audioCodecCtx->time_base = { 1, sampleRate };
+
+        if (avcodec_open2(audioCodecCtx, aCodec, nullptr) < 0) return false;
+
+        audioStream = avformat_new_stream(formatCtx, aCodec);
+        avcodec_parameters_from_context(audioStream->codecpar, audioCodecCtx);
+
+        // Detect Hardware Audio Format
+        AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_FLT;
+        if (inBitsPerSample == 16) inSampleFmt = AV_SAMPLE_FMT_S16;
+        else if (inBitsPerSample == 32) inSampleFmt = AV_SAMPLE_FMT_FLT;
+
+        AVChannelLayout in_ch_layout;
+        av_channel_layout_default(&in_ch_layout, inChannels);
+
+        swr_alloc_set_opts2(&swrCtx,
+            &audioCodecCtx->ch_layout, audioCodecCtx->sample_fmt, audioCodecCtx->sample_rate,
+            &in_ch_layout, inSampleFmt, sampleRate,
+            0, nullptr);
+        swr_init(swrCtx);
+
+        audioFifo = av_audio_fifo_alloc(audioCodecCtx->sample_fmt, audioCodecCtx->ch_layout.nb_channels, 1);
+
+        if (!(formatCtx->oformat->flags & AVFMT_NOFILE)) avio_open(&formatCtx->pb, outputFilename, AVIO_FLAG_WRITE);
+        avformat_write_header(formatCtx, nullptr);
+
+        // --- 3. ALLOCATE ---
+        videoFrame = av_frame_alloc();
+        videoFrame->format = videoCodecCtx->pix_fmt;
+        videoFrame->width = videoCodecCtx->width;
+        videoFrame->height = videoCodecCtx->height;
+        av_frame_get_buffer(videoFrame, 0);
+
+        audioFrame = av_frame_alloc();
+        audioFrame->nb_samples = audioCodecCtx->frame_size;
+        audioFrame->format = audioCodecCtx->sample_fmt;
+        av_channel_layout_copy(&audioFrame->ch_layout, &audioCodecCtx->ch_layout);
+        audioFrame->sample_rate = audioCodecCtx->sample_rate;
+        av_frame_get_buffer(audioFrame, 0);
+
+        swsCtx = sws_getContext(width, height, AV_PIX_FMT_BGRA, width, height, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+        packet = av_packet_alloc();
+
         return true;
+    }
+
+    void EncodeVideoFrame(uint8_t* bgraPixels, int rowPitch, int64_t msTimestamp) {
+        // If bgraPixels is null, we SKIP the heavy color conversion and just stamp 
+        // the PREVIOUS frame with the new timestamp! This keeps the MP4 file length perfect.
+        if (bgraPixels) {
+            const uint8_t* inData[1] = { bgraPixels };
+            int inLinesize[1] = { rowPitch };
+            sws_scale(swsCtx, inData, inLinesize, 0, videoCodecCtx->height, videoFrame->data, videoFrame->linesize);
+        }
+
+        videoFrame->pts = msTimestamp;
+        avcodec_send_frame(videoCodecCtx, videoFrame);
+
+        while (avcodec_receive_packet(videoCodecCtx, packet) == 0) {
+            av_packet_rescale_ts(packet, videoCodecCtx->time_base, videoStream->time_base);
+            packet->stream_index = videoStream->index;
+            av_interleaved_write_frame(formatCtx, packet);
+            av_packet_unref(packet);
+        }
+    }
+
+    void PushAudioData(uint8_t* rawData, int numFrames) {
+        if (numFrames <= 0 || !rawData) return;
+
+        int numChannels = audioCodecCtx->ch_layout.nb_channels;
+        int outExpected = swr_get_out_samples(swrCtx, numFrames);
+
+        uint8_t* converted[2] = { nullptr, nullptr };
+        av_samples_alloc(converted, nullptr, numChannels, outExpected, audioCodecCtx->sample_fmt, 0);
+
+        const uint8_t* inData[1] = { rawData };
+        int realOut = swr_convert(swrCtx, converted, outExpected, inData, numFrames);
+
+        if (realOut > 0) av_audio_fifo_write(audioFifo, (void**)converted, realOut);
+        av_freep(&converted[0]);
+
+        DrainAudioFifo();
+    }
+
+    // FIX: This bypasses the resampler entirely, meaning mathematically perfect silence with zero static.
+    void InjectSilence(int numFrames) {
+        if (numFrames <= 0) return;
+
+        int numChannels = audioCodecCtx->ch_layout.nb_channels;
+        uint8_t* silenceData[2] = { nullptr, nullptr };
+
+        av_samples_alloc(silenceData, nullptr, numChannels, numFrames, audioCodecCtx->sample_fmt, 0);
+        av_samples_set_silence(silenceData, 0, numFrames, numChannels, audioCodecCtx->sample_fmt);
+
+        av_audio_fifo_write(audioFifo, (void**)silenceData, numFrames);
+        av_freep(&silenceData[0]);
+
+        DrainAudioFifo();
+    }
+
+    void FlushEncoders() {
+        avcodec_send_frame(videoCodecCtx, nullptr);
+        while (avcodec_receive_packet(videoCodecCtx, packet) == 0) {
+            av_packet_rescale_ts(packet, videoCodecCtx->time_base, videoStream->time_base);
+            packet->stream_index = videoStream->index;
+            av_interleaved_write_frame(formatCtx, packet);
+            av_packet_unref(packet);
+        }
+        avcodec_send_frame(audioCodecCtx, nullptr);
+        while (avcodec_receive_packet(audioCodecCtx, packet) == 0) {
+            av_packet_rescale_ts(packet, audioCodecCtx->time_base, audioStream->time_base);
+            packet->stream_index = audioStream->index;
+            av_interleaved_write_frame(formatCtx, packet);
+            av_packet_unref(packet);
+        }
     }
 
     void Cleanup() {
         if (formatCtx) {
-            // Write the MP4 trailer to safely close the video file
+            FlushEncoders();
             av_write_trailer(formatCtx);
-            if (!(formatCtx->oformat->flags & AVFMT_NOFILE) && formatCtx->pb) {
-                avio_closep(&formatCtx->pb);
-            }
-            avformat_free_context(formatCtx);
-            formatCtx = nullptr;
+            if (!(formatCtx->oformat->flags & AVFMT_NOFILE) && formatCtx->pb) avio_closep(&formatCtx->pb);
+            avformat_free_context(formatCtx); formatCtx = nullptr;
         }
-        if (codecCtx) {
-            avcodec_free_context(&codecCtx);
-            codecCtx = nullptr;
-        }
+        if (videoCodecCtx) { avcodec_free_context(&videoCodecCtx); videoCodecCtx = nullptr; }
+        if (audioCodecCtx) { av_channel_layout_uninit(&audioCodecCtx->ch_layout); avcodec_free_context(&audioCodecCtx); audioCodecCtx = nullptr; }
+        if (videoFrame) { av_frame_free(&videoFrame); videoFrame = nullptr; }
+        if (audioFrame) { av_frame_free(&audioFrame); audioFrame = nullptr; }
+        if (packet) { av_packet_free(&packet); packet = nullptr; }
+        if (swsCtx) { sws_freeContext(swsCtx); swsCtx = nullptr; }
+        if (swrCtx) { swr_free(&swrCtx); swrCtx = nullptr; }
+        if (audioFifo) { av_audio_fifo_free(audioFifo); audioFifo = nullptr; }
     }
 };

@@ -21,6 +21,12 @@
     <ClInclude Include="EncoderEngine.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="AudioCaptureEngine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UIManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
