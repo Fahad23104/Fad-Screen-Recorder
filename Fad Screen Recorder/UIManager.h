@@ -1,4 +1,5 @@
 #pragma once
+#define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
 #include <iostream>
@@ -8,6 +9,7 @@
 
 #pragma comment(lib, "d3d11.lib")
 
+// Pure standard forward declaration to prevent macro link errors
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 class UIManager {
@@ -56,10 +58,12 @@ private:
     }
 
     void CreateRenderTarget() {
-        ID3D11Texture2D* pBackBuffer;
-        pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-        pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &mainRenderTargetView);
-        pBackBuffer->Release();
+        ID3D11Texture2D* pBackBuffer = nullptr;
+        // CRITICAL FIX: Explicit check to satisfy static analyzer that the pointer isn't NULL
+        if (SUCCEEDED(pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer))) && pBackBuffer) {
+            pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &mainRenderTargetView);
+            pBackBuffer->Release();
+        }
     }
 
     void CleanupRenderTarget() {
@@ -171,7 +175,6 @@ public:
     bool IsMinimized() { return IsIconic(hwnd); }
     HWND GetHWND() { return hwnd; }
 
-    // CRITICAL FIX: Accepts showOverlay flag & tightens widget bounds
     void SetMiniMode(bool mini, bool showOverlay = true) {
         long style = GetWindowLong(hwnd, GWL_STYLE);
         int screenW = GetSystemMetrics(SM_CXSCREEN);
@@ -181,11 +184,10 @@ public:
             style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
             SetWindowLong(hwnd, GWL_STYLE, style);
 
-            // Reduced height from 150 to 95 to completely eliminate dead space
             SetWindowPos(hwnd, HWND_TOPMOST, screenW - 400, 50, 380, 95, SWP_FRAMECHANGED);
 
-            if (showOverlay) ShowWindow(hwnd, SW_SHOWNA); // Show without stealing focus
-            else ShowWindow(hwnd, SW_HIDE);               // Hide completely
+            if (showOverlay) ShowWindow(hwnd, SW_SHOWNA);
+            else ShowWindow(hwnd, SW_HIDE);
         }
         else {
             style |= (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);

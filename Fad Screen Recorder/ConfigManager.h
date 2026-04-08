@@ -14,12 +14,12 @@ public:
     int videoQuality;
     bool showOverlay;
     bool recordAudio;
+    bool recordCursor;  // NEW SETTING
 
-    // NEW SETTINGS
-    int audioSource;    // 0: Speakers, 1: Microphone, 2: Both
-    bool showWebcam;    // Overlay toggle
-    int webcamShape;    // 0: Square, 1: Circle
-    int webcamPosition; // 0: Top-Right, 1: Bottom-Right, 2: Bottom-Left, 3: Top-Left
+    int audioSource;
+    bool showWebcam;
+    int webcamShape;
+    int webcamPosition;
 
     ConfigManager() {
         outputFolder = fs::current_path().string() + "\\FadRecordings";
@@ -27,10 +27,11 @@ public:
         videoQuality = 23;
         showOverlay = true;
         recordAudio = true;
+        recordCursor = true; // Cursor visible by default
         audioSource = 0;
         showWebcam = false;
-        webcamShape = 1;    // Default to Circular
-        webcamPosition = 1; // Default to Bottom-Right
+        webcamShape = 1;
+        webcamPosition = 1;
         Load();
 
         if (!fs::exists(outputFolder)) {
@@ -48,6 +49,7 @@ public:
                 videoQuality = data.value("VideoQuality", videoQuality);
                 showOverlay = data.value("ShowOverlay", showOverlay);
                 recordAudio = data.value("RecordAudio", recordAudio);
+                recordCursor = data.value("RecordCursor", recordCursor);
                 audioSource = data.value("AudioSource", audioSource);
                 showWebcam = data.value("ShowWebcam", showWebcam);
                 webcamShape = data.value("WebcamShape", webcamShape);
@@ -64,6 +66,7 @@ public:
         data["VideoQuality"] = videoQuality;
         data["ShowOverlay"] = showOverlay;
         data["RecordAudio"] = recordAudio;
+        data["RecordCursor"] = recordCursor;
         data["AudioSource"] = audioSource;
         data["ShowWebcam"] = showWebcam;
         data["WebcamShape"] = webcamShape;

@@ -1,11 +1,12 @@
 {
-    "AudioSource": 2,
+    "AudioSource": 0,
     "FPS": 60,
     "OutputFolder": "C:\\Users\\Fahad Irfan\\source\\repos\\Fad Screen Recorder\\Fad Screen Recorder\\FadRecordings",
     "RecordAudio": true,
+    "RecordCursor": true,
     "ShowOverlay": true,
     "ShowWebcam": true,
     "VideoQuality": 18,
     "WebcamPosition": 1,
-    "WebcamShape": 0
+    "WebcamShape": 1
 }

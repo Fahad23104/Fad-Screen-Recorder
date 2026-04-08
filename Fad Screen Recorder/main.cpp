@@ -1,6 +1,7 @@
 ﻿#include "UIManager.h"
 #include "CaptureEngine.h"
 #include "AudioCaptureEngine.h"
+#include "WebcamEngine.h"
 #include "EncoderEngine.h"
 #include "ConfigManager.h"
 #include <thread>
@@ -37,24 +38,21 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
     CaptureEngine capture;
     AudioCaptureEngine primaryAudio;
     AudioCaptureEngine secondaryAudio;
+    WebcamEngine webcam;
 
     bool hasPrimaryAudio = false;
     bool hasSecondaryAudio = false;
 
     if (!capture.Initialize()) { isRecording = false; return; }
+    if (config.showWebcam) webcam.Initialize();
 
-    // Dynamic Audio Routing
     if (config.recordAudio) {
         if (config.audioSource == 0 || config.audioSource == 2) {
-            hasPrimaryAudio = primaryAudio.Initialize(0); // 0 = Speakers
+            hasPrimaryAudio = primaryAudio.Initialize(0); // Speakers
         }
         if (config.audioSource == 1 || config.audioSource == 2) {
-            if (config.audioSource == 1) {
-                hasPrimaryAudio = primaryAudio.Initialize(1); // 1 = Microphone Only
-            }
-            else {
-                hasSecondaryAudio = secondaryAudio.Initialize(1); // Mix Mic as Secondary
-            }
+            if (config.audioSource == 1) hasPrimaryAudio = primaryAudio.Initialize(1); // Mic Only
+            else hasSecondaryAudio = secondaryAudio.Initialize(1); // Mixed Mic
         }
     }
 
@@ -63,7 +61,6 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
     int screenH = GetDeviceCaps(hdc, DESKTOPVERTRES);
     ReleaseDC(NULL, hdc);
 
-    // Fallback constants if audio is completely disabled
     int sampleRate = 48000;
     int channels = 2;
     int bitsPerSample = 16;
@@ -84,8 +81,22 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
 
     EncoderEngine encoder;
     if (!encoder.Initialize(screenW, screenH, config.fps, config.videoQuality, sampleRate, channels, bitsPerSample, isFloat, finalOutputPath.c_str())) {
-        isRecording = false;
-        return;
+        isRecording = false; return;
+    }
+
+    if (hasSecondaryAudio) {
+        int sRate2 = secondaryAudio.GetFormat()->nSamplesPerSec;
+        int sChannels2 = secondaryAudio.GetFormat()->nChannels;
+        int sBits2 = secondaryAudio.GetFormat()->wBitsPerSample;
+        bool sFloat2 = false;
+        WAVEFORMATEX* wf2 = secondaryAudio.GetFormat();
+        if (wf2 && wf2->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) sFloat2 = true;
+        else if (wf2 && wf2->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+            WAVEFORMATEXTENSIBLE* pExt = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(wf2);
+            const GUID SUBTYPE_IEEE_FLOAT = { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
+            if (memcmp(&pExt->SubFormat, &SUBTYPE_IEEE_FLOAT, sizeof(GUID)) == 0) sFloat2 = true;
+        }
+        encoder.InitializeSecondaryAudio(sRate2, sChannels2, sBits2, sFloat2);
     }
 
     auto startTime = std::chrono::steady_clock::now();
@@ -103,12 +114,9 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
 
         if (isPaused) {
             if (!wasPaused) { pauseStartTime = now; wasPaused = true; }
-
-            // Keep buffers drained to prevent WASAPI overflows
             BYTE* dummyData; UINT32 dummyFrames; bool dummySilent;
             if (hasPrimaryAudio) while (primaryAudio.AcquireAudio(&dummyData, &dummyFrames, &dummySilent)) primaryAudio.ReleaseAudioBuffer(dummyFrames);
             if (hasSecondaryAudio) while (secondaryAudio.AcquireAudio(&dummyData, &dummyFrames, &dummySilent)) secondaryAudio.ReleaseAudioBuffer(dummyFrames);
-
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -137,10 +145,11 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
                 primaryAudio.ReleaseAudioBuffer(framesAvailable);
             }
         }
-
-        // Drain secondary to prevent audio hardware lockup (Real mixing requires FFmpeg complex filter graphs)
         if (hasSecondaryAudio) {
             while (secondaryAudio.AcquireAudio(&audioData, &framesAvailable, &isSilent)) {
+                if (framesAvailable > 0 && !isSilent && audioData) {
+                    encoder.PushSecondaryAudioData(audioData, (int)framesAvailable);
+                }
                 secondaryAudio.ReleaseAudioBuffer(framesAvailable);
             }
         }
@@ -159,54 +168,22 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
                 uint8_t* rawPixels = nullptr;
                 int rowPitch = 0;
 
-                if (capture.CopyFrameToCPU(frameTexture, &rawPixels, &rowPitch)) {
+                // CRITICAL FIX: Pass the cursor toggle to the capture engine
+                if (capture.CopyFrameToCPU(frameTexture, &rawPixels, &rowPitch, config.recordCursor)) {
 
-                    // ========================================================
-                    // NATIVE CPU ALPHA-BLENDING OVERLAY ENGINE (WEBCAM)
-                    // ========================================================
+                    // Hook the live webcam straight into the CPU pixel buffer
                     if (config.showWebcam && rawPixels) {
-                        int camW = screenW / 5; // Dynamic sizing based on monitor
-                        int camH = (camW * 9) / 16;
-                        int pad = 30;
-                        int sX = 0, sY = 0;
+                        int camW = webcam.GetWidth();
+                        int camH = webcam.GetHeight();
+                        if (camW > 0 && camH > 0) {
+                            int pad = 30;
+                            int sX = 0, sY = 0;
+                            if (config.webcamPosition == 0) { sX = screenW - camW - pad; sY = pad; }
+                            else if (config.webcamPosition == 1) { sX = screenW - camW - pad; sY = screenH - camH - pad; }
+                            else if (config.webcamPosition == 2) { sX = pad; sY = screenH - camH - pad; }
+                            else if (config.webcamPosition == 3) { sX = pad; sY = pad; }
 
-                        if (config.webcamPosition == 0) { sX = screenW - camW - pad; sY = pad; } // Top-Right
-                        else if (config.webcamPosition == 1) { sX = screenW - camW - pad; sY = screenH - camH - pad; } // Bot-Right
-                        else if (config.webcamPosition == 2) { sX = pad; sY = screenH - camH - pad; } // Bot-Left
-                        else if (config.webcamPosition == 3) { sX = pad; sY = pad; } // Top-Left
-
-                        float cx = camW / 2.0f;
-                        float cy = camH / 2.0f;
-
-                        for (int y = 0; y < camH; y++) {
-                            for (int x = 0; x < camW; x++) {
-                                int screenX = sX + x;
-                                int screenY = sY + y;
-                                if (screenX < 0 || screenX >= screenW || screenY < 0 || screenY >= screenH) continue;
-
-                                bool draw = true;
-                                float dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-
-                                // Circular Mask Logic
-                                if (config.webcamShape == 1 && dist > (cx * cx)) {
-                                    draw = false;
-                                }
-
-                                if (draw) {
-                                    int pIdx = (screenY * rowPitch) + (screenX * 4);
-                                    bool isBorder = false;
-
-                                    if (config.webcamShape == 1) isBorder = dist > (cx * cx - 600); // Circle Border
-                                    else isBorder = (x < 6 || y < 6 || x > camW - 6 || y > camH - 6); // Square Border
-
-                                    if (isBorder) {
-                                        rawPixels[pIdx] = 200; rawPixels[pIdx + 1] = 50; rawPixels[pIdx + 2] = 50; // Red Border
-                                    }
-                                    else {
-                                        rawPixels[pIdx] = 30; rawPixels[pIdx + 1] = 30; rawPixels[pIdx + 2] = 30; // Cam Background
-                                    }
-                                }
-                            }
+                            webcam.GetFrame(rawPixels, screenW, screenH, rowPitch, sX, sY, config.webcamShape);
                         }
                     }
 
@@ -312,7 +289,6 @@ int main() {
             recordedSeconds = 0;
             ui.SetMiniMode(true, config.showOverlay);
 
-            // Pass the entire config object securely
             backgroundWorker = std::thread(RecordingWorker, filepath, config);
         }
         else if (isPaused) {
@@ -447,6 +423,9 @@ int main() {
                     bool changed = false;
 
                     if (ImGui::Checkbox("Show Recording Overlay Mini-widget", &config.showOverlay)) changed = true;
+                    if (ImGui::Checkbox("Capture Mouse Cursor", &config.recordCursor)) changed = true;
+
+                    ImGui::Spacing();
 
                     // --- AUDIO ROUTING UI ---
                     if (ImGui::Checkbox("Record Audio Tracks", &config.recordAudio)) changed = true;

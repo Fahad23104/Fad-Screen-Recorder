@@ -1,7 +1,9 @@
 #pragma once
+#define NOMINMAX // Explicitly block Windows macros here
 #include <iostream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -25,26 +27,77 @@ private:
 
     AVCodecContext* audioCodecCtx = nullptr;
     AVStream* audioStream = nullptr;
+
+    // Primary Audio (Speakers)
     SwrContext* swrCtx = nullptr;
     AVAudioFifo* audioFifo = nullptr;
+
+    // Secondary Audio (Microphone Mixer)
+    SwrContext* swrCtx2 = nullptr;
+    AVAudioFifo* secondaryFifo = nullptr;
+    bool hasSecondaryAudio = false;
+
     AVFrame* audioFrame = nullptr;
     int64_t audioFrameCounter = 0;
 
     AVPacket* packet = nullptr;
 
-    void DrainAudioFifo() {
-        while (av_audio_fifo_size(audioFifo) >= audioCodecCtx->frame_size) {
-            av_audio_fifo_read(audioFifo, (void**)audioFrame->data, audioCodecCtx->frame_size);
+    void DrainAudioFifos() {
+        if (!hasSecondaryAudio) {
+            while (av_audio_fifo_size(audioFifo) >= audioCodecCtx->frame_size) {
+                av_audio_fifo_read(audioFifo, (void**)audioFrame->data, audioCodecCtx->frame_size);
 
-            audioFrame->pts = audioFrameCounter;
-            audioFrameCounter += audioFrame->nb_samples;
+                audioFrame->pts = audioFrameCounter;
+                audioFrameCounter += audioFrame->nb_samples;
 
-            avcodec_send_frame(audioCodecCtx, audioFrame);
-            while (avcodec_receive_packet(audioCodecCtx, packet) == 0) {
-                av_packet_rescale_ts(packet, audioCodecCtx->time_base, audioStream->time_base);
-                packet->stream_index = audioStream->index;
-                av_interleaved_write_frame(formatCtx, packet);
-                av_packet_unref(packet);
+                avcodec_send_frame(audioCodecCtx, audioFrame);
+                while (avcodec_receive_packet(audioCodecCtx, packet) == 0) {
+                    av_packet_rescale_ts(packet, audioCodecCtx->time_base, audioStream->time_base);
+                    packet->stream_index = audioStream->index;
+                    av_interleaved_write_frame(formatCtx, packet);
+                    av_packet_unref(packet);
+                }
+            }
+        }
+        else {
+            // NATIVE FLOAT AUDIO MIXER: Perfectly mixes mic and speakers mathematically
+            int minFrames = std::min(av_audio_fifo_size(audioFifo), av_audio_fifo_size(secondaryFifo));
+            while (minFrames >= audioCodecCtx->frame_size) {
+                int fs = audioCodecCtx->frame_size;
+
+                float* buf1[2];
+                float* buf2[2];
+                av_samples_alloc((uint8_t**)buf1, nullptr, 2, fs, AV_SAMPLE_FMT_FLTP, 0);
+                av_samples_alloc((uint8_t**)buf2, nullptr, 2, fs, AV_SAMPLE_FMT_FLTP, 0);
+
+                av_audio_fifo_read(audioFifo, (void**)buf1, fs);
+                av_audio_fifo_read(secondaryFifo, (void**)buf2, fs);
+
+                float* outL = (float*)audioFrame->data[0];
+                float* outR = (float*)audioFrame->data[1];
+
+                for (int i = 0; i < fs; i++) {
+                    outL[i] = buf1[0][i] + buf2[0][i];
+                    outR[i] = buf1[1][i] + buf2[1][i]; // Mixes cleanly even if Mic is mono mapped to stereo
+
+                    // Hard clipper to prevent static blowout
+                    if (outL[i] > 1.0f) outL[i] = 1.0f; else if (outL[i] < -1.0f) outL[i] = -1.0f;
+                    if (outR[i] > 1.0f) outR[i] = 1.0f; else if (outR[i] < -1.0f) outR[i] = -1.0f;
+                }
+
+                av_freep(&buf1[0]);
+                av_freep(&buf2[0]);
+
+                audioFrame->pts = audioFrameCounter;
+                audioFrameCounter += audioFrame->nb_samples;
+                avcodec_send_frame(audioCodecCtx, audioFrame);
+                while (avcodec_receive_packet(audioCodecCtx, packet) == 0) {
+                    av_packet_rescale_ts(packet, audioCodecCtx->time_base, audioStream->time_base);
+                    packet->stream_index = audioStream->index;
+                    av_interleaved_write_frame(formatCtx, packet);
+                    av_packet_unref(packet);
+                }
+                minFrames -= fs;
             }
         }
     }
@@ -53,7 +106,6 @@ public:
     EncoderEngine() = default;
     ~EncoderEngine() { Cleanup(); }
 
-    // CRITICAL FIX: Added 'crf' to control video quality dynamically
     bool Initialize(int width, int height, int fps, int crf, int sampleRate, int inChannels, int inBitsPerSample, bool isFloat, const char* outputFilename) {
         avformat_alloc_output_context2(&formatCtx, nullptr, "mp4", outputFilename);
         if (!formatCtx) return false;
@@ -73,7 +125,6 @@ public:
 
             if (name == "libx264") {
                 av_opt_set(videoCodecCtx->priv_data, "preset", "veryfast", 0);
-                // Apply the dynamically passed Video Quality setting
                 av_opt_set(videoCodecCtx->priv_data, "crf", std::to_string(crf).c_str(), 0);
             }
 
@@ -99,22 +150,17 @@ public:
         avcodec_parameters_from_context(audioStream->codecpar, audioCodecCtx);
 
         AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_S16;
-        if (isFloat) {
-            inSampleFmt = AV_SAMPLE_FMT_FLT;
-        }
+        if (isFloat) inSampleFmt = AV_SAMPLE_FMT_FLT;
         else {
-            if (inBitsPerSample == 32) inSampleFmt = AV_SAMPLE_FMT_S32;
-            else if (inBitsPerSample == 24) inSampleFmt = AV_SAMPLE_FMT_S32;
+            if (inBitsPerSample == 32 || inBitsPerSample == 24) inSampleFmt = AV_SAMPLE_FMT_S32;
             else if (inBitsPerSample == 16) inSampleFmt = AV_SAMPLE_FMT_S16;
         }
 
         AVChannelLayout in_ch_layout;
         av_channel_layout_default(&in_ch_layout, inChannels);
 
-        swr_alloc_set_opts2(&swrCtx,
-            &audioCodecCtx->ch_layout, audioCodecCtx->sample_fmt, audioCodecCtx->sample_rate,
-            &in_ch_layout, inSampleFmt, sampleRate,
-            0, nullptr);
+        swr_alloc_set_opts2(&swrCtx, &audioCodecCtx->ch_layout, audioCodecCtx->sample_fmt, audioCodecCtx->sample_rate,
+            &in_ch_layout, inSampleFmt, sampleRate, 0, nullptr);
         swr_init(swrCtx);
 
         audioFifo = av_audio_fifo_alloc(audioCodecCtx->sample_fmt, audioCodecCtx->ch_layout.nb_channels, 1);
@@ -141,6 +187,27 @@ public:
         return true;
     }
 
+    bool InitializeSecondaryAudio(int sampleRate, int inChannels, int inBitsPerSample, bool isFloat) {
+        AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_S16;
+        if (isFloat) inSampleFmt = AV_SAMPLE_FMT_FLT;
+        else {
+            if (inBitsPerSample == 32 || inBitsPerSample == 24) inSampleFmt = AV_SAMPLE_FMT_S32;
+            else if (inBitsPerSample == 16) inSampleFmt = AV_SAMPLE_FMT_S16;
+        }
+
+        AVChannelLayout in_ch_layout;
+        av_channel_layout_default(&in_ch_layout, inChannels);
+
+        swr_alloc_set_opts2(&swrCtx2, &audioCodecCtx->ch_layout, audioCodecCtx->sample_fmt, audioCodecCtx->sample_rate,
+            &in_ch_layout, inSampleFmt, sampleRate, 0, nullptr);
+
+        if (swr_init(swrCtx2) < 0) return false;
+
+        secondaryFifo = av_audio_fifo_alloc(audioCodecCtx->sample_fmt, audioCodecCtx->ch_layout.nb_channels, 1);
+        hasSecondaryAudio = true;
+        return true;
+    }
+
     void EncodeVideoFrame(uint8_t* bgraPixels, int rowPitch, int64_t msTimestamp) {
         if (bgraPixels) {
             const uint8_t* inData[1] = { bgraPixels };
@@ -161,25 +228,34 @@ public:
 
     void PushAudioData(uint8_t* rawData, int numFrames) {
         if (numFrames <= 0 || !rawData) return;
-
-        int numChannels = audioCodecCtx->ch_layout.nb_channels;
         int outExpected = swr_get_out_samples(swrCtx, numFrames);
-
         uint8_t* converted[2] = { nullptr, nullptr };
-        av_samples_alloc(converted, nullptr, numChannels, outExpected, audioCodecCtx->sample_fmt, 0);
+        av_samples_alloc(converted, nullptr, audioCodecCtx->ch_layout.nb_channels, outExpected, audioCodecCtx->sample_fmt, 0);
 
         const uint8_t* inData[1] = { rawData };
         int realOut = swr_convert(swrCtx, converted, outExpected, inData, numFrames);
 
         if (realOut > 0) av_audio_fifo_write(audioFifo, (void**)converted, realOut);
         av_freep(&converted[0]);
+        DrainAudioFifos();
+    }
 
-        DrainAudioFifo();
+    void PushSecondaryAudioData(uint8_t* rawData, int numFrames) {
+        if (numFrames <= 0 || !rawData || !hasSecondaryAudio) return;
+        int outExpected = swr_get_out_samples(swrCtx2, numFrames);
+        uint8_t* converted[2] = { nullptr, nullptr };
+        av_samples_alloc(converted, nullptr, audioCodecCtx->ch_layout.nb_channels, outExpected, audioCodecCtx->sample_fmt, 0);
+
+        const uint8_t* inData[1] = { rawData };
+        int realOut = swr_convert(swrCtx2, converted, outExpected, inData, numFrames);
+
+        if (realOut > 0) av_audio_fifo_write(secondaryFifo, (void**)converted, realOut);
+        av_freep(&converted[0]);
+        DrainAudioFifos();
     }
 
     void InjectSilence(int numFrames) {
         if (numFrames <= 0) return;
-
         int numChannels = audioCodecCtx->ch_layout.nb_channels;
         uint8_t* silenceData[2] = { nullptr, nullptr };
 
@@ -187,15 +263,16 @@ public:
         av_samples_set_silence(silenceData, 0, numFrames, numChannels, audioCodecCtx->sample_fmt);
 
         av_audio_fifo_write(audioFifo, (void**)silenceData, numFrames);
-        av_freep(&silenceData[0]);
+        if (hasSecondaryAudio && secondaryFifo) {
+            av_audio_fifo_write(secondaryFifo, (void**)silenceData, numFrames);
+        }
 
-        DrainAudioFifo();
+        av_freep(&silenceData[0]);
+        DrainAudioFifos();
     }
 
     int64_t GetCurrentFileSize() {
-        if (formatCtx && formatCtx->pb) {
-            return avio_tell(formatCtx->pb);
-        }
+        if (formatCtx && formatCtx->pb) return avio_tell(formatCtx->pb);
         return 0;
     }
 
@@ -230,6 +307,8 @@ public:
         if (packet) { av_packet_free(&packet); packet = nullptr; }
         if (swsCtx) { sws_freeContext(swsCtx); swsCtx = nullptr; }
         if (swrCtx) { swr_free(&swrCtx); swrCtx = nullptr; }
+        if (swrCtx2) { swr_free(&swrCtx2); swrCtx2 = nullptr; }
         if (audioFifo) { av_audio_fifo_free(audioFifo); audioFifo = nullptr; }
+        if (secondaryFifo) { av_audio_fifo_free(secondaryFifo); secondaryFifo = nullptr; }
     }
 };
