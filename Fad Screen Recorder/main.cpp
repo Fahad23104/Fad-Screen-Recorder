@@ -168,23 +168,26 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
                 uint8_t* rawPixels = nullptr;
                 int rowPitch = 0;
 
-                // CRITICAL FIX: Pass the cursor toggle to the capture engine
                 if (capture.CopyFrameToCPU(frameTexture, &rawPixels, &rowPitch, config.recordCursor)) {
 
-                    // Hook the live webcam straight into the CPU pixel buffer
+                    // ========================================================
+                    // PERFECT WEBCAM OVERLAY SIZING AND POSITIONING
+                    // ========================================================
                     if (config.showWebcam && rawPixels) {
-                        int camW = webcam.GetWidth();
-                        int camH = webcam.GetHeight();
-                        if (camW > 0 && camH > 0) {
-                            int pad = 30;
-                            int sX = 0, sY = 0;
-                            if (config.webcamPosition == 0) { sX = screenW - camW - pad; sY = pad; }
-                            else if (config.webcamPosition == 1) { sX = screenW - camW - pad; sY = screenH - camH - pad; }
-                            else if (config.webcamPosition == 2) { sX = pad; sY = screenH - camH - pad; }
-                            else if (config.webcamPosition == 3) { sX = pad; sY = pad; }
+                        // Dynamically scale down to a small, professional PIP size
+                        int targetCamW = screenW / 6;
+                        int targetCamH = (targetCamW * 9) / 16; // Standard 16:9 
 
-                            webcam.GetFrame(rawPixels, screenW, screenH, rowPitch, sX, sY, config.webcamShape);
-                        }
+                        // Small padding to stick perfectly to the corners
+                        int pad = 15;
+                        int sX = 0, sY = 0;
+
+                        if (config.webcamPosition == 0) { sX = screenW - targetCamW - pad; sY = pad; }
+                        else if (config.webcamPosition == 1) { sX = screenW - targetCamW - pad; sY = screenH - targetCamH - pad; }
+                        else if (config.webcamPosition == 2) { sX = pad; sY = screenH - targetCamH - pad; }
+                        else if (config.webcamPosition == 3) { sX = pad; sY = pad; }
+
+                        webcam.GetFrame(rawPixels, screenW, screenH, rowPitch, targetCamW, targetCamH, sX, sY, config.webcamShape);
                     }
 
                     encoder.EncodeVideoFrame(rawPixels, rowPitch, effectiveElapsedMs);
@@ -427,7 +430,6 @@ int main() {
 
                     ImGui::Spacing();
 
-                    // --- AUDIO ROUTING UI ---
                     if (ImGui::Checkbox("Record Audio Tracks", &config.recordAudio)) changed = true;
                     if (config.recordAudio) {
                         ImGui::Indent();
@@ -438,7 +440,6 @@ int main() {
 
                     ImGui::Spacing();
 
-                    // --- WEBCAM OVERLAY UI ---
                     if (ImGui::Checkbox("Show Live Camera Overlay", &config.showWebcam)) changed = true;
                     if (config.showWebcam) {
                         ImGui::Indent();
