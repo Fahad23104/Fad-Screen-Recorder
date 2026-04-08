@@ -53,11 +53,11 @@ public:
     EncoderEngine() = default;
     ~EncoderEngine() { Cleanup(); }
 
-    bool Initialize(int width, int height, int fps, int sampleRate, int inChannels, int inBitsPerSample, const char* outputFilename) {
+    // CRITICAL FIX: Added 'crf' to control video quality dynamically
+    bool Initialize(int width, int height, int fps, int crf, int sampleRate, int inChannels, int inBitsPerSample, bool isFloat, const char* outputFilename) {
         avformat_alloc_output_context2(&formatCtx, nullptr, "mp4", outputFilename);
         if (!formatCtx) return false;
 
-        // --- 1. VIDEO SETUP (Millisecond Timebase) ---
         std::vector<std::string> encoderNames = { "h264_nvenc", "h264_amf", "h264_qsv", "libx264" };
         const AVCodec* vCodec = nullptr;
         for (const auto& name : encoderNames) {
@@ -73,7 +73,8 @@ public:
 
             if (name == "libx264") {
                 av_opt_set(videoCodecCtx->priv_data, "preset", "veryfast", 0);
-                av_opt_set(videoCodecCtx->priv_data, "crf", "23", 0);
+                // Apply the dynamically passed Video Quality setting
+                av_opt_set(videoCodecCtx->priv_data, "crf", std::to_string(crf).c_str(), 0);
             }
 
             if (avcodec_open2(videoCodecCtx, vCodec, nullptr) >= 0) break;
@@ -84,11 +85,10 @@ public:
         videoStream = avformat_new_stream(formatCtx, vCodec);
         avcodec_parameters_from_context(videoStream->codecpar, videoCodecCtx);
 
-        // --- 2. AUDIO SETUP ---
         const AVCodec* aCodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
         audioCodecCtx = avcodec_alloc_context3(aCodec);
         audioCodecCtx->sample_rate = sampleRate;
-        av_channel_layout_default(&audioCodecCtx->ch_layout, 2); // Force stereo to prevent corruption
+        av_channel_layout_default(&audioCodecCtx->ch_layout, 2);
         audioCodecCtx->sample_fmt = AV_SAMPLE_FMT_FLTP;
         audioCodecCtx->bit_rate = 192000;
         audioCodecCtx->time_base = { 1, sampleRate };
@@ -98,10 +98,15 @@ public:
         audioStream = avformat_new_stream(formatCtx, aCodec);
         avcodec_parameters_from_context(audioStream->codecpar, audioCodecCtx);
 
-        // Detect Hardware Audio Format
-        AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_FLT;
-        if (inBitsPerSample == 16) inSampleFmt = AV_SAMPLE_FMT_S16;
-        else if (inBitsPerSample == 32) inSampleFmt = AV_SAMPLE_FMT_FLT;
+        AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_S16;
+        if (isFloat) {
+            inSampleFmt = AV_SAMPLE_FMT_FLT;
+        }
+        else {
+            if (inBitsPerSample == 32) inSampleFmt = AV_SAMPLE_FMT_S32;
+            else if (inBitsPerSample == 24) inSampleFmt = AV_SAMPLE_FMT_S32;
+            else if (inBitsPerSample == 16) inSampleFmt = AV_SAMPLE_FMT_S16;
+        }
 
         AVChannelLayout in_ch_layout;
         av_channel_layout_default(&in_ch_layout, inChannels);
@@ -117,7 +122,6 @@ public:
         if (!(formatCtx->oformat->flags & AVFMT_NOFILE)) avio_open(&formatCtx->pb, outputFilename, AVIO_FLAG_WRITE);
         avformat_write_header(formatCtx, nullptr);
 
-        // --- 3. ALLOCATE ---
         videoFrame = av_frame_alloc();
         videoFrame->format = videoCodecCtx->pix_fmt;
         videoFrame->width = videoCodecCtx->width;
@@ -138,8 +142,6 @@ public:
     }
 
     void EncodeVideoFrame(uint8_t* bgraPixels, int rowPitch, int64_t msTimestamp) {
-        // If bgraPixels is null, we SKIP the heavy color conversion and just stamp 
-        // the PREVIOUS frame with the new timestamp! This keeps the MP4 file length perfect.
         if (bgraPixels) {
             const uint8_t* inData[1] = { bgraPixels };
             int inLinesize[1] = { rowPitch };
@@ -175,7 +177,6 @@ public:
         DrainAudioFifo();
     }
 
-    // FIX: This bypasses the resampler entirely, meaning mathematically perfect silence with zero static.
     void InjectSilence(int numFrames) {
         if (numFrames <= 0) return;
 
@@ -189,6 +190,13 @@ public:
         av_freep(&silenceData[0]);
 
         DrainAudioFifo();
+    }
+
+    int64_t GetCurrentFileSize() {
+        if (formatCtx && formatCtx->pb) {
+            return avio_tell(formatCtx->pb);
+        }
+        return 0;
     }
 
     void FlushEncoders() {

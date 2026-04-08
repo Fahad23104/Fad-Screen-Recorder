@@ -8,15 +8,13 @@
 
 #pragma comment(lib, "d3d11.lib")
 
-// Forward declare the message handler from the ImGui Win32 backend
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 class UIManager {
 private:
     HWND hwnd = nullptr;
     WNDCLASSEX wc = {};
 
-    // UI-Specific DirectX context (Separate from the Capture Engine)
     ID3D11Device* pd3dDevice = nullptr;
     ID3D11DeviceContext* pd3dDeviceContext = nullptr;
     IDXGISwapChain* pSwapChain = nullptr;
@@ -68,19 +66,15 @@ private:
         if (mainRenderTargetView) { mainRenderTargetView->Release(); mainRenderTargetView = nullptr; }
     }
 
-    // Static window message router
     static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-            return true;
+        if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) return true;
 
         switch (msg) {
         case WM_SIZE:
             if (wParam == SIZE_MINIMIZED) return 0;
-            // If we had the UIManager instance here, we would resize the swap chain. 
-            // For simplicity in this architecture, we skip dynamic resizing.
             return 0;
         case WM_SYSCOMMAND:
-            if ((wParam & 0xfff0) == SC_KEYMENU) return 0; // Disable ALT application menu
+            if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
             break;
         case WM_DESTROY:
             ::PostQuitMessage(0);
@@ -94,7 +88,6 @@ public:
     ~UIManager() { Shutdown(); }
 
     bool Initialize(const char* windowTitle, int width, int height) {
-        // 1. Create the Win32 Application Window
         wc.cbSize = sizeof(WNDCLASSEX);
         wc.style = CS_CLASSDC;
         wc.lpfnWndProc = WndProc;
@@ -109,57 +102,60 @@ public:
         wc.hIconSm = nullptr;
         ::RegisterClassEx(&wc);
 
-        // Convert const char* to LPCWSTR for the window title
         int titleLen = MultiByteToWideChar(CP_UTF8, 0, windowTitle, -1, nullptr, 0);
         wchar_t* wTitle = new wchar_t[titleLen];
         MultiByteToWideChar(CP_UTF8, 0, windowTitle, -1, wTitle, titleLen);
 
-        hwnd = ::CreateWindow(wc.lpszClassName, wTitle, WS_OVERLAPPEDWINDOW, 100, 100, width, height, nullptr, nullptr, wc.hInstance, nullptr);
+        int screenW = GetSystemMetrics(SM_CXSCREEN);
+        int screenH = GetSystemMetrics(SM_CYSCREEN);
+        int posX = (screenW - width) / 2;
+        int posY = (screenH - height) / 2;
+
+        hwnd = ::CreateWindow(wc.lpszClassName, wTitle, WS_OVERLAPPEDWINDOW, posX, posY, width, height, nullptr, nullptr, wc.hInstance, nullptr);
         delete[] wTitle;
 
-        // 2. Initialize Direct3D
         if (!CreateDeviceD3D(hwnd)) {
             CleanupDeviceD3D();
             ::UnregisterClass(wc.lpszClassName, wc.hInstance);
             return false;
         }
 
-        // 3. Show the Window
         ::ShowWindow(hwnd, SW_SHOWDEFAULT);
         ::UpdateWindow(hwnd);
 
-        // 4. Setup Dear ImGui Context
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO(); (void)io;
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-        // Setup ImGui Style
         ImGui::StyleColorsDark();
+        ImGuiStyle& style = ImGui::GetStyle();
 
-        // Setup Platform/Renderer bindings
+        io.FontGlobalScale = 1.4f;
+        style.ScaleAllSizes(1.4f);
+        style.WindowRounding = 8.0f;
+        style.FrameRounding = 6.0f;
+        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.12f, 1.0f);
+        style.Colors[ImGuiCol_ChildBg] = ImVec4(0.16f, 0.16f, 0.16f, 1.0f);
+
         ImGui_ImplWin32_Init(hwnd);
         ImGui_ImplDX11_Init(pd3dDevice, pd3dDeviceContext);
-
-        std::cout << "[+] Graphical User Interface initialized." << std::endl;
         return true;
     }
 
-    // Call this at the start of your UI loop
     void BeginRender() {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
     }
 
-    // Call this at the end to paint the pixels to the screen
     void EndRender() {
         ImGui::Render();
-        const float clear_color_with_alpha[4] = { 0.1f, 0.1f, 0.1f, 1.0f }; // Dark grey background
+        const float clear_color_with_alpha[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
         pd3dDeviceContext->OMSetRenderTargets(1, &mainRenderTargetView, nullptr);
         pd3dDeviceContext->ClearRenderTargetView(mainRenderTargetView, clear_color_with_alpha);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        pSwapChain->Present(1, 0); // VSYNC enabled
+        pSwapChain->Present(1, 0);
     }
 
     bool ProcessMessages() {
@@ -167,10 +163,47 @@ public:
         while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
             ::TranslateMessage(&msg);
             ::DispatchMessage(&msg);
-            if (msg.message == WM_QUIT)
-                return false; // User clicked the 'X' button
+            if (msg.message == WM_QUIT) return false;
         }
         return true;
+    }
+
+    bool IsMinimized() { return IsIconic(hwnd); }
+    HWND GetHWND() { return hwnd; }
+
+    // CRITICAL FIX: Accepts showOverlay flag & tightens widget bounds
+    void SetMiniMode(bool mini, bool showOverlay = true) {
+        long style = GetWindowLong(hwnd, GWL_STYLE);
+        int screenW = GetSystemMetrics(SM_CXSCREEN);
+        int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+        if (mini) {
+            style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+            SetWindowLong(hwnd, GWL_STYLE, style);
+
+            // Reduced height from 150 to 95 to completely eliminate dead space
+            SetWindowPos(hwnd, HWND_TOPMOST, screenW - 400, 50, 380, 95, SWP_FRAMECHANGED);
+
+            if (showOverlay) ShowWindow(hwnd, SW_SHOWNA); // Show without stealing focus
+            else ShowWindow(hwnd, SW_HIDE);               // Hide completely
+        }
+        else {
+            style |= (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+            SetWindowLong(hwnd, GWL_STYLE, style);
+            SetWindowPos(hwnd, HWND_NOTOPMOST, (screenW - 600) / 2, (screenH - 500) / 2, 600, 500, SWP_FRAMECHANGED);
+            ShowWindow(hwnd, SW_SHOWNORMAL);
+        }
+
+        if (pSwapChain && showOverlay) {
+            ID3D11RenderTargetView* nullViews[] = { nullptr };
+            pd3dDeviceContext->OMSetRenderTargets(1, nullViews, nullptr);
+            CleanupRenderTarget();
+
+            HRESULT hr = pSwapChain->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+            if (SUCCEEDED(hr)) {
+                CreateRenderTarget();
+            }
+        }
     }
 
     void Shutdown() {
