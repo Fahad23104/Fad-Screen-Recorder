@@ -18,30 +18,33 @@ public:
     AudioCaptureEngine() = default;
     ~AudioCaptureEngine() { Cleanup(); }
 
-    bool Initialize() {
+    // sourceType: 0 = Speakers (Loopback), 1 = Microphone (Direct Capture)
+    bool Initialize(int sourceType = 0) {
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return false;
 
         hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator);
         if (FAILED(hr)) return false;
 
-        hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+        // DYNAMIC ENDPOINT SELECTION
+        EDataFlow dataFlow = (sourceType == 1) ? eCapture : eRender;
+        hr = enumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &device);
         if (FAILED(hr)) return false;
 
         hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audioClient);
         if (FAILED(hr)) return false;
 
         hr = audioClient->GetMixFormat(&waveFormat);
-        // FIXED: Explicitly check if waveFormat is null to satisfy the static analyzer
         if (FAILED(hr) || !waveFormat) return false;
 
-        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, waveFormat, nullptr);
+        // Microphones DO NOT use the Loopback flag, Speakers DO.
+        DWORD baseFlags = (sourceType == 1) ? 0 : AUDCLNT_STREAMFLAGS_LOOPBACK;
+
+        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, baseFlags, 10000000, 0, waveFormat, nullptr);
 
         if (FAILED(hr)) {
             std::cout << "[*] Native format rejected. Engaging 32-bit Float Sanitizer..." << std::endl;
             WAVEFORMATEX* floatFmt = (WAVEFORMATEX*)CoTaskMemAlloc(sizeof(WAVEFORMATEX));
-
-            // FIXED: Check for NULL allocation
             if (!floatFmt) return false;
 
             floatFmt->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
@@ -55,19 +58,17 @@ public:
             CoTaskMemFree(waveFormat);
             waveFormat = floatFmt;
 
-            DWORD autoFlags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+            DWORD autoFlags = baseFlags | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
             hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, autoFlags, 10000000, 0, waveFormat, nullptr);
         }
 
         if (FAILED(hr)) {
             std::cout << "[*] 32-bit float rejected. Engaging 16-bit PCM Nuclear Fallback..." << std::endl;
             WAVEFORMATEX* intFmt = (WAVEFORMATEX*)CoTaskMemAlloc(sizeof(WAVEFORMATEX));
-
-            // FIXED: Check for NULL allocation
             if (!intFmt) return false;
 
             intFmt->wFormatTag = WAVE_FORMAT_PCM;
-            intFmt->nChannels = 2;
+            intFmt->nChannels = (sourceType == 1) ? 1 : 2; // Mics are often Mono
             intFmt->nSamplesPerSec = 48000;
             intFmt->wBitsPerSample = 16;
             intFmt->nBlockAlign = (intFmt->nChannels * intFmt->wBitsPerSample) / 8;
@@ -77,7 +78,7 @@ public:
             CoTaskMemFree(waveFormat);
             waveFormat = intFmt;
 
-            DWORD autoFlags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+            DWORD autoFlags = baseFlags | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
             hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, autoFlags, 10000000, 0, waveFormat, nullptr);
         }
 
