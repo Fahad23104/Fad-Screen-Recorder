@@ -128,11 +128,18 @@
     <ClInclude Include="CaptureEngine.h" />
     <ClInclude Include="ConfigManager.h" />
     <ClInclude Include="EncoderEngine.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="UIManager.h" />
     <ClInclude Include="WebcamEngine.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Fad Screen Recorder.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="logo.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

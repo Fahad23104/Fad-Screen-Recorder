@@ -30,7 +30,7 @@ public:
         }
         else {
             // Fallback in case the Windows API fails
-            outputFolder = fs::current_path().string() + "\\Fad Screen Recording";
+            outputFolder = fs::current_path().string() + "\\Fad Screen Recorder";
         }
 
         fps = 60;
