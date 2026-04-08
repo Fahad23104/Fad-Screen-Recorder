@@ -3,6 +3,7 @@
 #include <fstream>
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <shlobj.h> // Added to get the Documents folder path
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -22,7 +23,16 @@ public:
     int webcamPosition;
 
     ConfigManager() {
-        outputFolder = fs::current_path().string() + "\\FadRecordings";
+        // Fetch the PC's Documents folder dynamically
+        char path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_PERSONAL, NULL, 0, path))) {
+            outputFolder = std::string(path) + "\\Fad Screen Recorder";
+        }
+        else {
+            // Fallback in case the Windows API fails
+            outputFolder = fs::current_path().string() + "\\Fad Screen Recording";
+        }
+
         fps = 60;
         videoQuality = 23;
         showOverlay = true;

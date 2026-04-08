@@ -273,7 +273,7 @@ int main() {
     UIManager ui;
     ConfigManager config;
 
-    if (!ui.Initialize("Fad Recorder Pro", screenW / 2, screenH / 2)) {
+    if (!ui.Initialize("Fad Screen Recorder", screenW / 2, screenH / 2)) {
         CoUninitialize();
         return -1;
     }
@@ -354,7 +354,7 @@ int main() {
             }
         }
         else {
-            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "Fad Recorder Pro Engine");
+            ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "Fad Screen Recorder");
             ImGui::Separator();
             ImGui::Spacing(); ImGui::Spacing();
 
@@ -385,7 +385,7 @@ int main() {
 
                 if (ImGui::BeginTabItem("Video Gallery")) {
                     ImGui::Spacing();
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Double-click to play. Right-click for options.");
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Double-click to play.");
                     ImGui::BeginChild("GalleryList", ImVec2(0, 0), true);
 
                     if (fs::exists(config.outputFolder)) {
