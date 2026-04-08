@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
+#include "resource.h" // CRITICAL FIX: Include your resource definitions!
 
 #pragma comment(lib, "d3d11.lib")
 
@@ -59,7 +60,6 @@ private:
 
     void CreateRenderTarget() {
         ID3D11Texture2D* pBackBuffer = nullptr;
-        // CRITICAL FIX: Explicit check to satisfy static analyzer that the pointer isn't NULL
         if (SUCCEEDED(pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer))) && pBackBuffer) {
             pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &mainRenderTargetView);
             pBackBuffer->Release();
@@ -98,12 +98,15 @@ public:
         wc.cbClsExtra = 0L;
         wc.cbWndExtra = 0L;
         wc.hInstance = GetModuleHandle(nullptr);
-        wc.hIcon = nullptr;
+
+        // CRITICAL FIX: Load the custom icon from the compiled .exe resources
+        wc.hIcon = LoadIcon(wc.hInstance, MAKEINTRESOURCE(IDI_ICON1));
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = nullptr;
         wc.lpszMenuName = nullptr;
         wc.lpszClassName = L"FadRecorderUIClass";
-        wc.hIconSm = nullptr;
+        wc.hIconSm = LoadIcon(wc.hInstance, MAKEINTRESOURCE(IDI_ICON1));
+
         ::RegisterClassEx(&wc);
 
         int titleLen = MultiByteToWideChar(CP_UTF8, 0, windowTitle, -1, nullptr, 0);
