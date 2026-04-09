@@ -108,4 +108,4 @@ vcpkg install imgui[core,dx11,win32-binding]:x64-windows
 vcpkg install nlohmann-json:x64-windows
 
 # 2. Clone the repository
-git clone [https://github.com/Fahad23104/Fad-Screen-Recorder.git](https://github.com/Fahad23104/Fad-Screen-Recorder.git)
+git clone https://github.com/Fahad23104/Fad-Screen-Recorder.git
