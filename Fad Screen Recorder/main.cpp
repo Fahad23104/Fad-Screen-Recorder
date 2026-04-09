@@ -13,6 +13,7 @@
 #include <shobjidl.h> 
 #include <objbase.h> 
 #include <algorithm> 
+#include <shellapi.h> 
 
 namespace fs = std::filesystem;
 
@@ -168,17 +169,13 @@ void RecordingWorker(std::string finalOutputPath, ConfigManager config) {
                 uint8_t* rawPixels = nullptr;
                 int rowPitch = 0;
 
-                if (capture.CopyFrameToCPU(frameTexture, &rawPixels, &rowPitch, config.recordCursor)) {
+                // CRITICAL FIX: Passes both the Cursor and Click toggle
+                if (capture.CopyFrameToCPU(frameTexture, &rawPixels, &rowPitch, config.recordCursor, config.showMouseClicks)) {
 
-                    // ========================================================
-                    // PERFECT WEBCAM OVERLAY SIZING AND POSITIONING
-                    // ========================================================
                     if (config.showWebcam && rawPixels) {
-                        // Dynamically scale down to a small, professional PIP size
                         int targetCamW = screenW / 6;
-                        int targetCamH = (targetCamW * 9) / 16; // Standard 16:9 
+                        int targetCamH = (targetCamW * 9) / 16;
 
-                        // Small padding to stick perfectly to the corners
                         int pad = 15;
                         int sX = 0, sY = 0;
 
@@ -427,6 +424,9 @@ int main() {
 
                     if (ImGui::Checkbox("Show Recording Overlay Mini-widget", &config.showOverlay)) changed = true;
                     if (ImGui::Checkbox("Capture Mouse Cursor", &config.recordCursor)) changed = true;
+
+                    // NEW: MOUSE CLICKS TOGGLE
+                    if (ImGui::Checkbox("Show Mouse Click Effects", &config.showMouseClicks)) changed = true;
 
                     ImGui::Spacing();
 

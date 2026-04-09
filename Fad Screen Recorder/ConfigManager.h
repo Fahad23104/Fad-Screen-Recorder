@@ -3,7 +3,7 @@
 #include <fstream>
 #include <filesystem>
 #include <nlohmann/json.hpp>
-#include <shlobj.h> // Added to get the Documents folder path
+#include <shlobj.h>
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -15,7 +15,8 @@ public:
     int videoQuality;
     bool showOverlay;
     bool recordAudio;
-    bool recordCursor;  // NEW SETTING
+    bool recordCursor;
+    bool showMouseClicks; // NEW SETTING
 
     int audioSource;
     bool showWebcam;
@@ -23,13 +24,11 @@ public:
     int webcamPosition;
 
     ConfigManager() {
-        // Fetch the PC's Documents folder dynamically
         char path[MAX_PATH];
         if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_PERSONAL, NULL, 0, path))) {
             outputFolder = std::string(path) + "\\Fad Screen Recorder";
         }
         else {
-            // Fallback in case the Windows API fails
             outputFolder = fs::current_path().string() + "\\Fad Screen Recorder";
         }
 
@@ -37,7 +36,8 @@ public:
         videoQuality = 23;
         showOverlay = true;
         recordAudio = true;
-        recordCursor = true; // Cursor visible by default
+        recordCursor = true;
+        showMouseClicks = true; // Click effects enabled by default
         audioSource = 0;
         showWebcam = false;
         webcamShape = 1;
@@ -60,6 +60,7 @@ public:
                 showOverlay = data.value("ShowOverlay", showOverlay);
                 recordAudio = data.value("RecordAudio", recordAudio);
                 recordCursor = data.value("RecordCursor", recordCursor);
+                showMouseClicks = data.value("ShowMouseClicks", showMouseClicks);
                 audioSource = data.value("AudioSource", audioSource);
                 showWebcam = data.value("ShowWebcam", showWebcam);
                 webcamShape = data.value("WebcamShape", webcamShape);
@@ -77,6 +78,7 @@ public:
         data["ShowOverlay"] = showOverlay;
         data["RecordAudio"] = recordAudio;
         data["RecordCursor"] = recordCursor;
+        data["ShowMouseClicks"] = showMouseClicks;
         data["AudioSource"] = audioSource;
         data["ShowWebcam"] = showWebcam;
         data["WebcamShape"] = webcamShape;

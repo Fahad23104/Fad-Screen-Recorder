@@ -60,11 +60,11 @@ public:
         return true;
     }
 
-    bool CopyFrameToCPU(ID3D11Texture2D* frameTexture, uint8_t** outData, int* outRowPitch, bool drawCursor) {
+    // CRITICAL FIX: Added drawClicks parameter
+    bool CopyFrameToCPU(ID3D11Texture2D* frameTexture, uint8_t** outData, int* outRowPitch, bool drawCursor, bool drawClicks) {
         D3D11_TEXTURE2D_DESC desc;
         frameTexture->GetDesc(&desc);
 
-        // Explicit FAILED checks added to satisfy the static analyzer
         if (!stagingTexture) {
             desc.Usage = D3D11_USAGE_STAGING;
             desc.BindFlags = 0;
@@ -81,23 +81,49 @@ public:
             if (FAILED(d3dDevice->CreateTexture2D(&desc, nullptr, &gdiTexture))) return false;
         }
 
-        // Ultimate failsafe
         if (!gdiTexture || !stagingTexture) return false;
 
         d3dContext->CopyResource(gdiTexture, frameTexture);
 
-        if (drawCursor) {
+        if (drawCursor || drawClicks) {
             IDXGISurface1* gdiSurface = nullptr;
             if (SUCCEEDED(gdiTexture->QueryInterface(__uuidof(IDXGISurface1), (void**)&gdiSurface))) {
                 CURSORINFO ci = { sizeof(CURSORINFO) };
                 if (GetCursorInfo(&ci) && ci.flags == CURSOR_SHOWING) {
                     HDC hdc;
                     if (SUCCEEDED(gdiSurface->GetDC(FALSE, &hdc))) {
-                        ICONINFO ii;
-                        if (GetIconInfo(ci.hCursor, &ii)) {
-                            DrawIconEx(hdc, ci.ptScreenPos.x - ii.xHotspot, ci.ptScreenPos.y - ii.yHotspot, ci.hCursor, 0, 0, 0, NULL, DI_NORMAL | DI_COMPAT);
-                            DeleteObject(ii.hbmColor);
-                            DeleteObject(ii.hbmMask);
+
+                        // Draw Click Effects BEFORE the cursor so the cursor sits on top
+                        if (drawClicks) {
+                            bool lDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                            bool rDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+
+                            if (lDown || rDown) {
+                                // Yellow for Left Click, Cyan for Right Click
+                                COLORREF color = lDown ? RGB(255, 255, 0) : RGB(0, 255, 255);
+                                HBRUSH brush = CreateSolidBrush(color);
+                                HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 0, 0)); // Red border
+
+                                HGDIOBJ oldBrush = SelectObject(hdc, brush);
+                                HGDIOBJ oldPen = SelectObject(hdc, pen);
+
+                                Ellipse(hdc, ci.ptScreenPos.x - 20, ci.ptScreenPos.y - 20, ci.ptScreenPos.x + 20, ci.ptScreenPos.y + 20);
+
+                                SelectObject(hdc, oldBrush);
+                                SelectObject(hdc, oldPen);
+                                DeleteObject(brush);
+                                DeleteObject(pen);
+                            }
+                        }
+
+                        // Draw the Cursor
+                        if (drawCursor) {
+                            ICONINFO ii;
+                            if (GetIconInfo(ci.hCursor, &ii)) {
+                                DrawIconEx(hdc, ci.ptScreenPos.x - ii.xHotspot, ci.ptScreenPos.y - ii.yHotspot, ci.hCursor, 0, 0, 0, NULL, DI_NORMAL | DI_COMPAT);
+                                DeleteObject(ii.hbmColor);
+                                DeleteObject(ii.hbmMask);
+                            }
                         }
                         gdiSurface->ReleaseDC(nullptr);
                     }
