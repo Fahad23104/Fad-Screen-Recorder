@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://via.placeholder.com/150/000000/FFFFFF/?text=Fad+Recorder+Logo" alt="Fad Screen Recorder Logo" width="150"/>
+<img src="assets/logo.png" alt="Fad Screen Recorder Logo" width="150"/>
 
 # 🎬 Fad Screen Recorder Pro
 
@@ -9,7 +9,6 @@
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=c%2B%2B&logoColor=white)](https://en.cppreference.com/)
 [![DirectX 11](https://img.shields.io/badge/DirectX-11-2C73D2?style=for-the-badge&logo=windows&logoColor=white)](#)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-6.1-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](#)
 
 *Engineered for creators who demand high fidelity without the resource overhead.*
 
@@ -21,16 +20,19 @@
 
 ## 👁️ Visual Showcase
 
-> **Note to Developer:** *Drop a high-quality `.gif` here showing the app opening, the settings being tweaked, and a recording starting with the mini-widget!*
->
-> `<img src="link_to_your_demo.gif" width="100%"/>`
+<img src="assets/demo.gif" width="100%" alt="Fad Recorder Demo"/>
 
 <details>
 <summary><b>Click to view detailed screenshots</b></summary>
 
-* *Screenshot 1: The Dark-Mode Dashboard*
-* *Screenshot 2: The Floating Mini-Widget*
-* *Screenshot 3: Video Gallery & File Management*
+### The Dark-Mode Dashboard
+![Dashboard](assets/screenshot1.png)
+
+### The Floating Mini-Widget
+![Mini Widget](assets/screenshot2.png)
+
+### Video Gallery & File Management
+![Gallery](assets/screenshot3.png)
 
 </details>
 
