@@ -4,7 +4,7 @@
 
 # 🎬 Fad Screen Recorder Pro
 
-**A zero-latency, hardware-accelerated broadcasting and capture suite built in modern C++.**
+**A zero-latency, hardware-accelerated broadcasting and capture suite built in modern C++20.**
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=c%2B%2B&logoColor=white)](https://en.cppreference.com/)
 [![DirectX 11](https://img.shields.io/badge/DirectX-11-2C73D2?style=for-the-badge&logo=windows&logoColor=white)](#)
